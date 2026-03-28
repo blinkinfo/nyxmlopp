@@ -11,6 +11,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import config as cfg
 from core import strategy, trader, resolver
+from core import pending_queue
 from db import queries
 from polymarket.markets import SLOT_DURATION, slot_info_from_ts
 
@@ -63,8 +64,20 @@ async def _resolve_and_notify(signal_id: int, slug: str, side: str, entry_price:
 
     winner = await resolver.resolve_slot(slug)
     if winner is None:
-        log.warning("Could not resolve slot %s — leaving signal %d pending", slug, signal_id)
-        await _send_telegram(f"\u26a0\ufe0f Could not resolve slot {slug} — manual check needed.")
+        log.warning(
+            "Could not resolve slot %s after all attempts — adding to persistent retry queue",
+            slug,
+        )
+        await pending_queue.add_pending(
+            signal_id=signal_id,
+            slug=slug,
+            side=side,
+            entry_price=entry_price,
+            slot_start=slot_start,
+            slot_end=slot_end,
+            trade_id=trade_id,
+            amount_usdc=amount_usdc,
+        )
         return
 
     is_win = winner == side
@@ -91,6 +104,74 @@ async def _resolve_and_notify(signal_id: int, slug: str, side: str, entry_price:
         pnl=pnl,
     )
     await _send_telegram(msg)
+
+
+async def _reconcile_pending() -> None:
+    """Retry resolution for all slots in the persistent pending queue.
+
+    Called every 5 minutes by the scheduler. Tries check_resolution() once
+    per pending slot. Resolved slots are removed from the queue and reported
+    to Telegram. Unresolved slots remain for the next cycle.
+    """
+    from bot.formatters import format_resolution
+
+    pending = await pending_queue.list_pending()
+    if not pending:
+        return
+
+    log.info("Reconciler: checking %d pending slot(s)...", len(pending))
+
+    for item in pending:
+        signal_id = item["signal_id"]
+        slug = item["slug"]
+        side = item["side"]
+        entry_price = item["entry_price"]
+        slot_start = item["slot_start"]
+        slot_end = item["slot_end"]
+        trade_id = item.get("trade_id")
+        amount_usdc = item.get("amount_usdc")
+
+        try:
+            winner, resolved = await resolver.check_resolution(slug)
+        except Exception:
+            log.exception("Reconciler: error checking slug=%s", slug)
+            continue
+
+        if not resolved:
+            log.debug("Reconciler: slot %s still unresolved — will retry next cycle", slug)
+            continue
+
+        # Resolved — update DB
+        is_win = winner == side
+        await queries.resolve_signal(signal_id, winner, is_win)
+
+        pnl: float | None = None
+        if trade_id is not None and amount_usdc is not None:
+            if is_win:
+                pnl = round(amount_usdc * (1.0 / entry_price - 1.0), 4)
+            else:
+                pnl = -amount_usdc
+            await queries.resolve_trade(trade_id, winner, is_win, pnl)
+
+        # Remove from queue
+        await pending_queue.remove_pending(signal_id)
+
+        # Notify Telegram
+        s_start = slot_start.split(" ")[-1] if " " in slot_start else slot_start
+        s_end = slot_end.split(" ")[-1] if " " in slot_end else slot_end
+        msg = format_resolution(
+            is_win=is_win,
+            side=side,
+            entry_price=entry_price,
+            slot_start_str=s_start,
+            slot_end_str=s_end,
+            pnl=pnl,
+        )
+        await _send_telegram(msg)
+        log.info(
+            "Reconciler: resolved signal %d — winner=%s is_win=%s",
+            signal_id, winner, is_win,
+        )
 
 
 async def _check_and_trade() -> None:
@@ -231,35 +312,62 @@ async def recover_unresolved() -> None:
     signals = await queries.get_unresolved_signals()
     if not signals:
         log.debug("No unresolved signals to recover.")
-        return
+    else:
+        log.info("Recovering %d unresolved signal(s)...", len(signals))
+        for sig in signals:
+            slug = f"btc-updown-5m-{sig['slot_timestamp']}"
+            trade = await queries.get_trade_by_signal(sig["id"])
+            trade_id = trade["id"] if trade else None
+            amount_usdc = trade["amount_usdc"] if trade else None
 
-    log.info("Recovering %d unresolved signal(s)...", len(signals))
-    for sig in signals:
-        slug = f"btc-updown-5m-{sig['slot_timestamp']}"
-        trade = await queries.get_trade_by_signal(sig["id"])
-        trade_id = trade["id"] if trade else None
-        amount_usdc = trade["amount_usdc"] if trade else None
+            # Schedule immediate resolution (past slots should already be resolved)
+            resolve_time = datetime.now(timezone.utc) + timedelta(seconds=5)
+            if SCHEDULER is not None:
+                SCHEDULER.add_job(
+                    _resolve_and_notify,
+                    trigger="date",
+                    run_date=resolve_time,
+                    kwargs={
+                        "signal_id": sig["id"],
+                        "slug": slug,
+                        "side": sig["side"],
+                        "entry_price": sig["entry_price"],
+                        "slot_start": sig["slot_start"],
+                        "slot_end": sig["slot_end"],
+                        "trade_id": trade_id,
+                        "amount_usdc": amount_usdc,
+                    },
+                    id=f"recover_{sig['id']}",
+                    replace_existing=True,
+                )
 
-        # Schedule immediate resolution (past slots should already be resolved)
-        resolve_time = datetime.now(timezone.utc) + timedelta(seconds=5)
-        if SCHEDULER is not None:
-            SCHEDULER.add_job(
-                _resolve_and_notify,
-                trigger="date",
-                run_date=resolve_time,
-                kwargs={
-                    "signal_id": sig["id"],
-                    "slug": slug,
-                    "side": sig["side"],
-                    "entry_price": sig["entry_price"],
-                    "slot_start": sig["slot_start"],
-                    "slot_end": sig["slot_end"],
-                    "trade_id": trade_id,
-                    "amount_usdc": amount_usdc,
-                },
-                id=f"recover_{sig['id']}",
-                replace_existing=True,
-            )
+    # Also re-queue any slots that were in the persistent retry queue before restart
+    pending = await pending_queue.list_pending()
+    if pending:
+        log.info("Recovering %d slot(s) from persistent retry queue...", len(pending))
+        for item in pending:
+            # Schedule immediate retry for each
+            resolve_time = datetime.now(timezone.utc) + timedelta(seconds=10)
+            if SCHEDULER is not None:
+                SCHEDULER.add_job(
+                    _resolve_and_notify,
+                    trigger="date",
+                    run_date=resolve_time,
+                    kwargs={
+                        "signal_id": item["signal_id"],
+                        "slug": item["slug"],
+                        "side": item["side"],
+                        "entry_price": item["entry_price"],
+                        "slot_start": item["slot_start"],
+                        "slot_end": item["slot_end"],
+                        "trade_id": item.get("trade_id"),
+                        "amount_usdc": item.get("amount_usdc"),
+                    },
+                    id=f"recover_pending_{item['signal_id']}",
+                    replace_existing=True,
+                )
+            # Remove from persistent queue — _resolve_and_notify will re-add if still fails
+            await pending_queue.remove_pending(item["signal_id"])
 
 
 def start_scheduler(tg_app, poly_client) -> AsyncIOScheduler:
@@ -270,6 +378,16 @@ def start_scheduler(tg_app, poly_client) -> AsyncIOScheduler:
 
     SCHEDULER = AsyncIOScheduler(timezone="UTC")
     SCHEDULER.start()
+
+    # Reconciler: retry pending slots every 5 minutes
+    SCHEDULER.add_job(
+        _reconcile_pending,
+        trigger="interval",
+        minutes=5,
+        id="reconcile_pending",
+        replace_existing=True,
+    )
+    log.info("Reconciler job scheduled (every 5 minutes).")
 
     # Schedule first check
     _schedule_next()
