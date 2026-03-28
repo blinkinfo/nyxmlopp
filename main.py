@@ -19,6 +19,11 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+# Suppress noisy third-party loggers
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
 log = logging.getLogger("autopoly")
 
 
@@ -51,11 +56,8 @@ def main() -> None:
     # 3. Build Telegram Application with post_init hook
     async def post_init(application: Application) -> None:
         """Called after the Application is initialised but before polling starts."""
-        log.info("Bot post_init: recovering unresolved signals...")
         await recover_unresolved()
-        log.info("Post-init: starting scheduler...")
         start_scheduler(application, poly_client)
-        log.info("Scheduler started inside bot event loop.")
 
     application = (
         Application.builder()

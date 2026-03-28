@@ -29,7 +29,7 @@ async def check_signal() -> dict[str, Any] | None:
     slot_n = get_current_slot_info()
     slot_n1 = get_next_slot_info()
 
-    log.info(
+    log.debug(
         "Checking signal for slot N %s (%s-%s UTC)",
         slot_n["slug"],
         slot_n["slot_start_str"],
@@ -44,7 +44,7 @@ async def check_signal() -> dict[str, Any] | None:
     up_price = prices["up_price"]
     down_price = prices["down_price"]
 
-    log.info("Slot N prices  Up=%.4f  Down=%.4f  (threshold=%.2f)", up_price, down_price, cfg.SIGNAL_THRESHOLD)
+    log.debug("Slot N prices  Up=%.4f  Down=%.4f  (threshold=%.2f)", up_price, down_price, cfg.SIGNAL_THRESHOLD)
 
     side: str | None = None
     entry_price: float | None = None

@@ -97,8 +97,6 @@ async def _check_and_trade() -> None:
     """Core loop body — called at T-85s for each slot."""
     from bot.formatters import format_signal, format_skip
 
-    log.info("--- check_and_trade triggered ---")
-
     # 1. Check signal
     signal = await strategy.check_signal()
     if signal is None:
@@ -207,7 +205,7 @@ async def _check_and_trade() -> None:
             id=f"resolve_{signal_id}",
             replace_existing=True,
         )
-        log.info("Scheduled resolution for signal %d at %s", signal_id, resolve_time.isoformat())
+        log.debug("Scheduled resolution for signal %d at %s", signal_id, resolve_time.isoformat())
 
     # 7. Schedule next check
     _schedule_next()
@@ -225,14 +223,14 @@ def _schedule_next() -> None:
         id="check_and_trade",
         replace_existing=True,
     )
-    log.info("Next signal check scheduled at %s UTC", next_time.strftime("%H:%M:%S"))
+    log.info("Next check: %s UTC", next_time.strftime("%H:%M:%S"))
 
 
 async def recover_unresolved() -> None:
     """On startup, schedule resolution for any unresolved signals/trades."""
     signals = await queries.get_unresolved_signals()
     if not signals:
-        log.info("No unresolved signals to recover.")
+        log.debug("No unresolved signals to recover.")
         return
 
     log.info("Recovering %d unresolved signal(s)...", len(signals))

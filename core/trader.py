@@ -45,5 +45,5 @@ async def place_fok_order(
         poly_client.client.post_order, signed, OrderType.FOK
     )
 
-    log.info("Order response: %s", response)
+    log.debug("Order response: %s", response)
     return response

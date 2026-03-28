@@ -32,7 +32,7 @@ class PolymarketClient:
 
         # Step 2 — derive / fetch L2 API creds
         creds = self.client.create_or_derive_api_creds()
-        log.info("API creds derived successfully.")
+        log.debug("API creds derived successfully.")
 
         # Step 3 — re-instantiate with creds for authenticated L2 trading
         self.client = ClobClient(
