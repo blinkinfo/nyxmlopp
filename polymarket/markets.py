@@ -98,14 +98,10 @@ async def get_clob_best_ask(token_id: str, client: httpx.AsyncClient) -> float |
 
     GET https://clob.polymarket.com/book?token_id={token_id}
 
-    The ask side represents what a buyer pays. We return asks[0]["price"]
-    which is the lowest ask (best ask) — this matches what Polymarket UI shows.
-
-    Ask-side sort order from the CLOB API: ASCENDING (lowest price first).
-    Therefore asks[0] is the best (lowest) ask — the price a buyer actually pays.
-    asks[-1] is the highest ask in the book.
-    The debug log prints the range as best_ask (lowest) .. asks[-1] (highest),
-    which is the conventional low-to-high notation.
+    The ask side represents what a buyer pays.  Rather than relying on the
+    API's sort order we explicitly take the minimum price across all ask
+    levels, which is robust to any future changes in how Polymarket returns
+    the data.
 
     Returns float price or None on error / empty book.
     """
@@ -125,16 +121,14 @@ async def get_clob_best_ask(token_id: str, client: httpx.AsyncClient) -> float |
         return None
 
     try:
-        # CLOB API returns asks sorted ASCENDING (lowest price first).
-        # asks[0] is the best (lowest) ask — what a buyer actually pays.
-        best_ask = float(asks[0]["price"])
+        # Explicitly take the minimum price across all ask levels rather than
+        # relying on the API's sort order — robust to any future changes in
+        # how Polymarket returns the data.
+        prices = [float(a["price"]) for a in asks]
+        best_ask = min(prices)
         log.debug(
-            "CLOB best ask for token_id=%s: %.4f (book range: %.4f\u2013%.4f, %d levels)",
-            token_id,
-            best_ask,
-            float(asks[0]["price"]),   # low end  (best ask)
-            float(asks[-1]["price"]),  # high end (worst ask in book)
-            len(asks),
+            "CLOB best ask for token_id=%s: %.4f (book range: %.4f-%.4f, %d levels)",
+            token_id, best_ask, min(prices), max(prices), len(asks),
         )
         return best_ask
     except (KeyError, ValueError, IndexError):
