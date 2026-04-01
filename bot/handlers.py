@@ -21,6 +21,8 @@ from telegram.ext import (
 
 import config as cfg
 from bot.formatters import (
+    format_demo_recent_trades,
+    format_demo_stats,
     format_help,
     format_recent_signals,
     format_recent_trades,
@@ -125,6 +127,8 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         ss = last_sig["slot_start"].split(" ")[-1] if " " in last_sig["slot_start"] else last_sig["slot_start"]
         last_sig_str = f"{ss} UTC ({last_sig['side']})"
 
+    demo_trade = await queries.is_demo_trade_enabled()
+    demo_bankroll = await queries.get_demo_bankroll() if demo_trade else None
     text = format_status(
         connected=connected,
         balance=balance,
@@ -135,6 +139,8 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         last_signal=last_sig_str,
         auto_redeem=auto_redeem,
         n2_filter_enabled=n2_filter,
+        demo_trade_enabled=demo_trade,
+        demo_bankroll=demo_bankroll,
     )
     if update.callback_query:
         await update.callback_query.answer()
@@ -202,8 +208,10 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     auto_redeem = await queries.is_auto_redeem_enabled()
     n2_filter = await queries.is_n2_filter_enabled()
     trade_amount = await queries.get_trade_amount()
+    demo_trade = await queries.is_demo_trade_enabled()
+    demo_bankroll = await queries.get_demo_bankroll()
     text = "\u2699\ufe0f <b>Settings</b>\n\nTap a button to change:"
-    kb = settings_keyboard(autotrade, trade_amount, auto_redeem, n2_filter)
+    kb = settings_keyboard(autotrade, trade_amount, auto_redeem, n2_filter, demo_trade, demo_bankroll)
     if update.callback_query:
         await update.callback_query.answer()
         await _safe_edit(update.callback_query, text, reply_markup=kb)
@@ -433,6 +441,41 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             reply_markup=back_to_menu(),
         )
 
+    elif data == "toggle_demo_trade":
+        current = await queries.is_demo_trade_enabled()
+        await queries.set_setting("demo_trade_enabled", "false" if current else "true")
+        new_state = "OFF" if current else "ON"
+        await query.answer(f"Demo Trade {new_state}")
+        await cmd_settings(update, context)
+
+    elif data == "set_demo_bankroll":
+        await query.answer()
+        demo_bankroll = await queries.get_demo_bankroll()
+        await _safe_edit(
+            query,
+            f"\U0001f4b0 <b>Set Demo Bankroll</b>\n\n"
+            f"Current balance: <b>${demo_bankroll:.2f}</b>\n\n"
+            "Type the new bankroll amount in USDC (e.g. <code>500.00</code>):",
+        )
+        context.user_data["awaiting_demo_bankroll"] = True
+
+    elif data == "reset_demo_bankroll":
+        await queries.reset_demo_bankroll(1000.00)
+        await query.answer("Demo bankroll reset to $1000.00")
+        await cmd_settings(update, context)
+
+    elif data == "cmd_demo":
+        await _render_demo_stats(update, active="all")
+
+    elif data == "demo_10":
+        await _render_demo_stats(update, limit=10, active="10")
+
+    elif data == "demo_50":
+        await _render_demo_stats(update, limit=50, active="50")
+
+    elif data == "demo_all":
+        await _render_demo_stats(update, limit=None, active="all")
+
     else:
         await query.answer("Unknown action")
 
@@ -502,6 +545,39 @@ async def _handle_redeem_confirm(update: Update, context: ContextTypes.DEFAULT_T
 
 @auth_check
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # ── Demo bankroll input ──────────────────────────────────────────────
+    if context.user_data.get("awaiting_demo_bankroll"):
+        context.user_data["awaiting_demo_bankroll"] = False
+        raw = update.message.text.strip().replace("$", "")
+        try:
+            amount = float(raw)
+            if amount < 0:
+                raise ValueError("negative")
+        except ValueError:
+            await update.message.reply_text(
+                "\u274c Invalid amount. Please enter a non-negative number (e.g. 500.00)."
+            )
+            return
+        amount = round(amount, 2)
+        await queries.set_demo_bankroll(amount)
+        await update.message.reply_text(
+            f"\u2705 Demo bankroll set to <b>${amount:.2f}</b>",
+            parse_mode="HTML",
+        )
+        # Refresh settings panel
+        autotrade = await queries.is_autotrade_enabled()
+        auto_redeem = await queries.is_auto_redeem_enabled()
+        n2_filter = await queries.is_n2_filter_enabled()
+        demo_trade = await queries.is_demo_trade_enabled()
+        kb = settings_keyboard(autotrade, await queries.get_trade_amount(), auto_redeem, n2_filter, demo_trade, amount)
+        await update.message.reply_text(
+            "\u2699\ufe0f <b>Settings</b>",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
+        return
+
+    # ── Trade amount input ───────────────────────────────────────────────
     if not context.user_data.get("awaiting_amount"):
         return
 
@@ -527,12 +603,40 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     autotrade = await queries.is_autotrade_enabled()
     auto_redeem = await queries.is_auto_redeem_enabled()
     n2_filter = await queries.is_n2_filter_enabled()
-    kb = settings_keyboard(autotrade, amount, auto_redeem, n2_filter)
+    demo_trade = await queries.is_demo_trade_enabled()
+    demo_bankroll = await queries.get_demo_bankroll()
+    kb = settings_keyboard(autotrade, amount, auto_redeem, n2_filter, demo_trade, demo_bankroll)
     await update.message.reply_text(
         "\u2699\ufe0f <b>Settings</b>",
         reply_markup=kb,
         parse_mode="HTML",
     )
+
+
+
+# ---------------------------------------------------------------------------
+# /demo — Demo trade performance dashboard
+# ---------------------------------------------------------------------------
+
+async def _render_demo_stats(update: Update, limit: int | None = None, active: str = "all") -> None:
+    from bot.keyboards import demo_filter_row
+    stats = await queries.get_demo_trade_stats(limit=limit)
+    bankroll = await queries.get_demo_bankroll()
+    label = {"10": "Last 10", "50": "Last 50", "all": "All Time"}[active]
+    text = format_demo_stats(stats, bankroll, label)
+    recent = await queries.get_recent_demo_trades(10)
+    text += format_demo_recent_trades(recent)
+    kb = demo_filter_row(active)
+    if update.callback_query:
+        await update.callback_query.answer()
+        await _safe_edit(update.callback_query, text, reply_markup=kb)
+    else:
+        await update.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
+
+
+@auth_check
+async def cmd_demo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _render_demo_stats(update, limit=None, active="all")
 
 
 # ---------------------------------------------------------------------------
@@ -549,6 +653,7 @@ def register(application) -> None:
     application.add_handler(CommandHandler("help",        cmd_help))
     application.add_handler(CommandHandler("redeem",      cmd_redeem))
     application.add_handler(CommandHandler("redemptions", cmd_redemptions))
+    application.add_handler(CommandHandler("demo",        cmd_demo))
     application.add_handler(CallbackQueryHandler(callback_router))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 

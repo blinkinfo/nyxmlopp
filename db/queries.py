@@ -179,12 +179,14 @@ async def insert_trade(
     order_id: str | None = None,
     fill_price: float | None = None,
     status: str = "pending",
+    is_demo: bool = False,
 ) -> int:
     async with aiosqlite.connect(_db()) as db:
         cursor = await db.execute(
             "INSERT INTO trades (signal_id, slot_start, slot_end, side, entry_price, "
-            "amount_usdc, order_id, fill_price, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (signal_id, slot_start, slot_end, side, entry_price, amount_usdc, order_id, fill_price, status),
+            "amount_usdc, order_id, fill_price, status, is_demo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (signal_id, slot_start, slot_end, side, entry_price, amount_usdc, order_id, fill_price, status,
+             1 if is_demo else 0),
         )
         await db.commit()
         return cursor.lastrowid  # type: ignore[return-value]
@@ -549,6 +551,106 @@ async def get_all_signals_for_export() -> list[dict[str, Any]]:
         cursor = await db.execute(
             "SELECT id, slot_start, side, entry_price, is_win, filter_blocked "
             "FROM signals WHERE skipped = 0 ORDER BY id ASC"
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Demo Trade Settings
+# ---------------------------------------------------------------------------
+
+async def is_demo_trade_enabled() -> bool:
+    """Return True if demo trading mode is toggled on in settings."""
+    val = await get_setting("demo_trade_enabled")
+    return val == "true"
+
+
+async def get_demo_bankroll() -> float:
+    """Return the current demo bankroll balance in USDC."""
+    val = await get_setting("demo_bankroll_usdc")
+    return float(val) if val else 1000.00
+
+
+async def set_demo_bankroll(amount: float) -> None:
+    """Directly set the demo bankroll to a specific amount."""
+    await set_setting("demo_bankroll_usdc", f"{amount:.2f}")
+
+
+async def adjust_demo_bankroll(delta: float) -> float:
+    """Add delta (positive or negative) to the demo bankroll.
+
+    Returns the new balance. The bankroll is clamped to >= 0.
+    """
+    current = await get_demo_bankroll()
+    new_balance = max(0.0, round(current + delta, 2))
+    await set_setting("demo_bankroll_usdc", f"{new_balance:.2f}")
+    return new_balance
+
+
+async def reset_demo_bankroll(starting_amount: float = 1000.00) -> None:
+    """Reset the demo bankroll to the given starting amount (default $1000)."""
+    await set_setting("demo_bankroll_usdc", f"{starting_amount:.2f}")
+
+
+# ---------------------------------------------------------------------------
+# Demo Trade Stats
+# ---------------------------------------------------------------------------
+
+async def get_demo_trade_stats(limit: int | None = None) -> dict:
+    """Return aggregate P&L stats for demo trades only."""
+    async with aiosqlite.connect(_db()) as db:
+        db.row_factory = aiosqlite.Row
+
+        if limit:
+            inner = (
+                f"SELECT * FROM trades WHERE is_demo = 1 AND is_win IS NOT NULL "
+                f"ORDER BY id DESC LIMIT {limit}"
+            )
+            query = f"SELECT is_win, amount_usdc, pnl FROM ({inner}) ORDER BY id ASC"
+        else:
+            query = (
+                "SELECT is_win, amount_usdc, pnl FROM trades "
+                "WHERE is_demo = 1 AND is_win IS NOT NULL ORDER BY id ASC"
+            )
+
+        cursor = await db.execute(query)
+        rows = await cursor.fetchall()
+
+        total_q = "SELECT COUNT(*) as cnt FROM trades WHERE is_demo = 1"
+        total_row = await (await db.execute(total_q)).fetchone()
+        total_trades = total_row["cnt"] if total_row else 0
+
+    results = [r["is_win"] for r in rows]
+    wins = sum(1 for r in results if r == 1)
+    losses = sum(1 for r in results if r == 0)
+    resolved = wins + losses
+    win_pct = (wins / resolved * 100) if resolved else 0.0
+
+    total_deployed = sum(r["amount_usdc"] for r in rows)
+    total_pnl = sum(r["pnl"] for r in rows if r["pnl"] is not None)
+    total_returned = total_deployed + total_pnl
+    roi_pct = (total_pnl / total_deployed * 100) if total_deployed else 0.0
+
+    return {
+        "total_trades": total_trades,
+        "wins": wins,
+        "losses": losses,
+        "resolved": resolved,
+        "win_pct": round(win_pct, 1),
+        "total_deployed": round(total_deployed, 2),
+        "total_returned": round(total_returned, 2),
+        "net_pnl": round(total_pnl, 2),
+        "roi_pct": round(roi_pct, 1),
+    }
+
+
+async def get_recent_demo_trades(n: int = 10) -> list:
+    """Return the n most recent demo trades."""
+    async with aiosqlite.connect(_db()) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM trades WHERE is_demo = 1 ORDER BY id DESC LIMIT ?", (n,)
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]

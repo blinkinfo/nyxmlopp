@@ -58,7 +58,8 @@ async def _send_telegram(text: str) -> None:
 
 async def _resolve_and_notify(signal_id: int, slug: str, side: str, entry_price: float,
                                slot_start: str, slot_end: str, trade_id: int | None,
-                               amount_usdc: float | None) -> None:
+                               amount_usdc: float | None,
+                               is_demo: bool = False) -> None:
     """Poll for resolution, update DB, notify Telegram."""
     from bot.formatters import format_resolution
 
@@ -91,6 +92,13 @@ async def _resolve_and_notify(signal_id: int, slug: str, side: str, entry_price:
             pnl = -amount_usdc
         await queries.resolve_trade(trade_id, winner, is_win, pnl)
 
+        # Update demo bankroll on resolution
+        if is_demo and pnl is not None:
+            if is_win:
+                # Credit back staked amount + net profit
+                await queries.adjust_demo_bankroll(amount_usdc + pnl)
+            # On loss, amount_usdc was already deducted at entry — nothing to add back
+
     # Extract HH:MM from slot_start/slot_end full strings
     s_start = slot_start.split(" ")[-1] if " " in slot_start else slot_start
     s_end = slot_end.split(" ")[-1] if " " in slot_end else slot_end
@@ -102,6 +110,7 @@ async def _resolve_and_notify(signal_id: int, slug: str, side: str, entry_price:
         slot_start_str=s_start,
         slot_end_str=s_end,
         pnl=pnl,
+        is_demo=is_demo,
     )
     await _send_telegram(msg)
 
@@ -359,9 +368,56 @@ async def _check_and_trade() -> None:
     amount_usdc: float | None = None
     slot_label = f"{slot_start_str}-{slot_end_str}"
 
+    # Demo trade flag (read once, used in both demo and real branch)
+    demo_trade_enabled = await queries.is_demo_trade_enabled()
+
     if not filter_result.allowed:
         # Filter blocked — no trade placed, trade_id stays None
         pass
+    elif demo_trade_enabled:
+        # ── Demo Trade Path ─────────────────────────────────────────────────
+        # Simulate trade immediately without touching Polymarket.
+        # Deduct from demo bankroll at entry; credit back at resolution.
+        amount_usdc = round(trade_amount, 2)
+        demo_bankroll = await queries.get_demo_bankroll()
+
+        if demo_bankroll < amount_usdc:
+            log.warning(
+                "Demo bankroll ($%.2f) insufficient for trade amount ($%.2f) — skipping demo trade",
+                demo_bankroll, amount_usdc,
+            )
+            msg = (
+                f"\U0001f9ea <b>[DEMO] Bankroll Insufficient</b>\n"
+                f"Bankroll: ${demo_bankroll:.2f}  |  Required: ${amount_usdc:.2f}\n"
+                f"Demo trade skipped. Top up via /settings."
+            )
+            await _send_telegram(msg)
+        else:
+            # Deduct trade amount from bankroll
+            new_bankroll = await queries.adjust_demo_bankroll(-amount_usdc)
+
+            trade_id = await queries.insert_trade(
+                signal_id=signal_id,
+                slot_start=slot_start_full,
+                slot_end=slot_end_full,
+                side=side,
+                entry_price=entry_price,
+                amount_usdc=amount_usdc,
+                status="filled",
+                is_demo=True,
+            )
+            log.info(
+                "Demo trade placed: signal=%d trade_id=%d side=%s amount=$%.2f bankroll=$%.2f",
+                signal_id, trade_id, side, amount_usdc, new_bankroll,
+            )
+            msg = (
+                f"\U0001f9ea <b>[DEMO] Trade Placed</b>\n"
+                f"{'\U0001f4c8' if side == 'Up' else '\U0001f4c9'} {side}  @${entry_price:.2f}  "
+                f"${amount_usdc:.2f}\n"
+                f"\U0001f4b0 Demo Bankroll: ${new_bankroll:.2f}"
+            )
+            await _send_telegram(msg)
+
     elif autotrade and _poly_client is not None and token_id:
         amount_usdc = round(trade_amount, 2)
         trade_id = await queries.insert_trade(
@@ -489,6 +545,7 @@ async def _check_and_trade() -> None:
                 "slot_end": slot_end_full,
                 "trade_id": trade_id,
                 "amount_usdc": amount_usdc,
+                "is_demo": demo_trade_enabled,
             },
             id=f"resolve_{signal_id}",
             replace_existing=True,
@@ -542,6 +599,7 @@ async def recover_unresolved() -> None:
                         "slot_end": sig["slot_end"],
                         "trade_id": trade_id,
                         "amount_usdc": amount_usdc,
+                        "is_demo": bool(trade.get("is_demo", 0)) if trade else False,
                     },
                     id=f"recover_{sig['id']}",
                     replace_existing=True,

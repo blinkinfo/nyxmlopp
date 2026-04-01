@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS trades (
     resolved_at TIMESTAMP,
     retry_count INTEGER DEFAULT 0,
     last_retry_at TIMESTAMP,
+    is_demo INTEGER DEFAULT 0,
     FOREIGN KEY (signal_id) REFERENCES signals(id)
 );
 
@@ -67,6 +68,8 @@ DEFAULT_SETTINGS = {
     "trade_amount_usdc": str(cfg.TRADE_AMOUNT_USDC),
     "auto_redeem_enabled": "false",
     "n2_filter_enabled": "true",
+    "demo_trade_enabled": "false",
+    "demo_bankroll_usdc": "1000.00",
 }
 
 
@@ -95,11 +98,20 @@ async def migrate_db(db_path: str | None = None) -> None:
             await db.execute("ALTER TABLE trades ADD COLUMN retry_count INTEGER DEFAULT 0")
         if "last_retry_at" not in columns:
             await db.execute("ALTER TABLE trades ADD COLUMN last_retry_at TIMESTAMP")
+        if "is_demo" not in columns:
+            await db.execute("ALTER TABLE trades ADD COLUMN is_demo INTEGER DEFAULT 0")
 
         # Check existing columns in signals table
         cursor2 = await db.execute("PRAGMA table_info(signals)")
         sig_columns = {row[1] for row in await cursor2.fetchall()}
         if "filter_blocked" not in sig_columns:
             await db.execute("ALTER TABLE signals ADD COLUMN filter_blocked INTEGER DEFAULT 0")
+
+        # Seed any missing default settings (idempotent)
+        for key, value in DEFAULT_SETTINGS.items():
+            await db.execute(
+                "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+                (key, value),
+            )
 
         await db.commit()

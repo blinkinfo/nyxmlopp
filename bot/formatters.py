@@ -113,14 +113,16 @@ def format_resolution(
     slot_start_str: str,
     slot_end_str: str,
     pnl: float | None = None,
+    is_demo: bool = False,
 ) -> str:
     result_price = 1.00 if is_win else 0.00
     icon = "\u2705" if is_win else "\u274c"
     label = "WIN" if is_win else "LOSS"
     side_emoji = "\U0001f4c8" if side == "Up" else "\U0001f4c9"
+    demo_prefix = "\U0001f9ea [DEMO] " if is_demo else ""
 
     lines = [
-        f"{icon} <b>Signal Result \u2014 {label}</b>",
+        f"{icon} <b>{demo_prefix}Signal Result \u2014 {label}</b>",
         "\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
         f"\u2502 \u23f0 Slot: {slot_start_str}-{slot_end_str} UTC",
         f"\u2502 {side_emoji} Side: {side}",
@@ -402,12 +404,15 @@ def format_status(
     last_signal: str | None,
     auto_redeem: bool = False,
     n2_filter_enabled: bool = True,
+    demo_trade_enabled: bool = False,
+    demo_bankroll: float | None = None,
 ) -> str:
     conn_icon = "\U0001f7e2" if connected else "\U0001f534"
     conn_text = "Connected" if connected else "Disconnected"
     at_text = "ON" if autotrade else "OFF"
     ar_text = "ON" if auto_redeem else "OFF"
     n2_text = "ON" if n2_filter_enabled else "OFF"
+    dt_text = "ON" if demo_trade_enabled else "OFF"
     bal_text = f"{balance:.2f} USDC" if balance is not None else "N/A"
     sig_text = last_signal or "None"
 
@@ -424,6 +429,12 @@ def format_status(
         f"\U0001f4b5 Trade Amount: ${trade_amount:.2f}",
         f"\U0001f4ca Open Positions: {open_positions}",
         f"\U0001f4b0 Auto-Redeem: {ar_text}",
+        SEP,
+        f"\U0001f9ea Demo Trade: {dt_text}",
+    ]
+    if demo_bankroll is not None:
+        lines.append(f"\U0001f4b5 Demo Bankroll: ${demo_bankroll:.2f}")
+    lines += [
         SEP,
         f"\u23f0 Uptime: {uptime_str}",
         f"\U0001f4e1 Last Signal: {sig_text}",
@@ -494,3 +505,48 @@ def format_help() -> str:
         "winning positions and calls redeemPositions() on the Polygon CTF "
         "contract to collect your USDC.e. Use /redeem for a manual scan."
     )
+
+
+# ---------------------------------------------------------------------------
+# Demo Trade Formatters
+# ---------------------------------------------------------------------------
+
+def format_demo_stats(stats: dict, bankroll: float, label: str = "All Time") -> str:
+    """Format the demo trade P&L dashboard."""
+    sign = "+" if stats["net_pnl"] >= 0 else ""
+    roi_sign = "+" if stats["roi_pct"] >= 0 else ""
+    SEP = "\u2501" * 20
+    lines = [
+        f"\U0001f9ea <b>Demo Trade Performance ({label})</b>",
+        SEP,
+        f"\U0001f4ca Total Trades: {stats['total_trades']}",
+        f"\u2705 Wins: {stats['wins']}  |  \u274c Losses: {stats['losses']}",
+        f"\U0001f4c8 Win Rate: {stats['win_pct']}%",
+        SEP,
+        f"\U0001f4b5 Total Deployed: ${stats['total_deployed']:.2f}",
+        f"\U0001f4b0 Total Returned: ${stats['total_returned']:.2f}",
+        f"\U0001f4c8 Net P&L: {sign}${stats['net_pnl']:.2f}",
+        f"\U0001f4ca ROI: {roi_sign}{stats['roi_pct']}%",
+        SEP,
+        f"\U0001f4b0 Current Bankroll: ${bankroll:.2f}",
+    ]
+    return "\n".join(lines)
+
+
+def format_demo_recent_trades(trades: list) -> str:
+    """Format a list of recent demo trades."""
+    if not trades:
+        return "\nNo demo trades recorded yet."
+    lines = ["\n\U0001f4cb <b>Recent Demo Trades:</b>"]
+    for t in trades:
+        ss = t["slot_start"].split(" ")[-1] if " " in t["slot_start"] else t["slot_start"]
+        se = t["slot_end"].split(" ")[-1] if " " in t["slot_end"] else t["slot_end"]
+        icon = "\u2705" if t.get("is_win") == 1 else ("\u274c" if t.get("is_win") == 0 else "\u23f3")
+        pnl_str = ""
+        if t.get("pnl") is not None:
+            s = "+" if t["pnl"] >= 0 else ""
+            pnl_str = f"  {s}${t['pnl']:.2f}"
+        lines.append(
+            f"\U0001f9ea {icon} {ss}-{se} UTC  {t['side']}  ${t['amount_usdc']:.2f}{pnl_str}"
+        )
+    return "\n".join(lines)

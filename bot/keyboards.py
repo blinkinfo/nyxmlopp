@@ -24,6 +24,7 @@ def main_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton("\U0001f4dc Redemptions", callback_data="cmd_redemptions"),
         ],
         [
+            InlineKeyboardButton("\U0001f9ea Demo", callback_data="cmd_demo"),
             InlineKeyboardButton("\u2753 Help", callback_data="cmd_help"),
         ],
     ])
@@ -38,15 +39,21 @@ def settings_keyboard(
     trade_amount: float,
     auto_redeem_on: bool = False,
     n2_filter_on: bool = True,
+    demo_trade_on: bool = False,
+    demo_bankroll: float = 1000.00,
 ) -> InlineKeyboardMarkup:
     at_label = "\U0001f916 AutoTrade: ON" if autotrade_on else "\U0001f916 AutoTrade: OFF"
     n2_label = "\U0001f9ea N-2 Filter: ON" if n2_filter_on else "\U0001f9ea N-2 Filter: OFF"
     ar_label = "\U0001f4b0 Auto-Redeem: ON" if auto_redeem_on else "\U0001f4b0 Auto-Redeem: OFF"
+    dt_label = "\U0001f9ea Demo Trade: ON" if demo_trade_on else "\U0001f9ea Demo Trade: OFF"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(at_label, callback_data="toggle_autotrade")],
         [InlineKeyboardButton(n2_label, callback_data="toggle_n2_filter")],
         [InlineKeyboardButton(f"\U0001f4b5 Trade Amount: ${trade_amount:.2f}", callback_data="change_amount")],
         [InlineKeyboardButton(ar_label, callback_data="toggle_auto_redeem")],
+        [InlineKeyboardButton(dt_label, callback_data="toggle_demo_trade")],
+        [InlineKeyboardButton(f"\U0001f4b0 Demo Bankroll: ${demo_bankroll:.2f}", callback_data="set_demo_bankroll")],
+        [InlineKeyboardButton("\U0001f504 Reset Demo Bankroll", callback_data="reset_demo_bankroll")],
         [InlineKeyboardButton("\U0001f519 Back to Menu", callback_data="cmd_menu")],
     ])
 
@@ -147,4 +154,20 @@ def redeem_done_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("\U0001f4dc History", callback_data="cmd_redemptions"),
             InlineKeyboardButton("\U0001f519 Menu",    callback_data="cmd_menu"),
         ],
+    ])
+
+
+def demo_filter_row(active: str = "all") -> InlineKeyboardMarkup:
+    """Filter row for the /demo dashboard."""
+    def _btn(label: str, cb: str) -> InlineKeyboardButton:
+        prefix = "\u25b6\ufe0f " if cb.split("_")[-1] == active else ""
+        return InlineKeyboardButton(f"{prefix}{label}", callback_data=cb)
+
+    return InlineKeyboardMarkup([
+        [
+            _btn("Last 10", "demo_10"),
+            _btn("Last 50", "demo_50"),
+            _btn("All Time", "demo_all"),
+        ],
+        [InlineKeyboardButton("\U0001f519 Back to Menu", callback_data="cmd_menu")],
     ])
