@@ -78,6 +78,7 @@ async def _resolve_and_notify(signal_id: int, slug: str, side: str, entry_price:
             slot_end=slot_end,
             trade_id=trade_id,
             amount_usdc=amount_usdc,
+            is_demo=is_demo,
         )
         return
 
@@ -139,6 +140,7 @@ async def _reconcile_pending() -> None:
         slot_end = item["slot_end"]
         trade_id = item.get("trade_id")
         amount_usdc = item.get("amount_usdc")
+        is_demo = item.get("is_demo", False)
 
         try:
             winner, resolved = await resolver.check_resolution(slug)
@@ -162,6 +164,11 @@ async def _reconcile_pending() -> None:
                 pnl = -amount_usdc
             await queries.resolve_trade(trade_id, winner, is_win, pnl)
 
+            # Credit demo bankroll on resolution (mirrors _resolve_and_notify)
+            if is_demo and pnl is not None:
+                if is_win:
+                    await queries.adjust_demo_bankroll(amount_usdc + pnl)
+
         # Remove from queue
         await pending_queue.remove_pending(signal_id)
 
@@ -175,6 +182,7 @@ async def _reconcile_pending() -> None:
             slot_start_str=s_start,
             slot_end_str=s_end,
             pnl=pnl,
+            is_demo=is_demo,
         )
         await _send_telegram(msg)
         log.info(
@@ -360,6 +368,7 @@ async def _check_and_trade() -> None:
         n2_filter_enabled=(await queries.is_n2_filter_enabled()),
         n2_side=filter_result.n2_side,
         filter_blocked=(not filter_result.allowed),
+        demo_trade=demo_trade_enabled,
     )
     await _send_telegram(msg)
 

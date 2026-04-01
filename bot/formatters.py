@@ -21,10 +21,13 @@ def format_signal(
     n2_filter_enabled: bool = True,
     n2_side: str | None = None,
     filter_blocked: bool = False,
+    demo_trade: bool = False,
 ) -> str:
     side_emoji = "\U0001f4c8" if side == "Up" else "\U0001f4c9"
-    if not autotrade:
+    if not autotrade and not demo_trade:
         at_line = "\U0001f916 AutoTrade: OFF"
+    elif not autotrade and demo_trade:
+        at_line = "\U0001f916 AutoTrade: OFF | \U0001f9ea Demo Trade Placed"
     elif filter_blocked:
         at_line = "\U0001f916 AutoTrade: ON (Trade Blocked by N-2 Filter)"
     else:
@@ -485,6 +488,7 @@ def format_help() -> str:
         "/redeem \u2014 Scan & redeem winning positions\n"
         "/redemptions \u2014 Redemption history\n"
         "/settings \u2014 Toggle autotrade/auto-redeem, set amount\n"
+        "/demo \u2014 Demo trading mode & virtual bankroll\n"
         "/help \u2014 This help message\n\n"
         "<b>How it works:</b>\n"
         "Every 5 minutes the bot checks the NEXT slot's BTC up/down "

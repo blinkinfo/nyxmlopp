@@ -83,7 +83,7 @@ async def get_n2_trade_side(current_slot_ts: int) -> str | None:
         signal_id = row["id"]
         # Find a filled trade for that signal
         cursor2 = await db.execute(
-            "SELECT side FROM trades WHERE signal_id = ? AND status = 'filled' LIMIT 1",
+            "SELECT side FROM trades WHERE signal_id = ? AND status = 'filled' AND is_demo = 0 LIMIT 1",
             (signal_id,),
         )
         trade_row = await cursor2.fetchone()
@@ -256,7 +256,7 @@ async def get_recent_trades(n: int = 10) -> list[dict[str, Any]]:
     async with aiosqlite.connect(_db()) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT * FROM trades ORDER BY id DESC LIMIT ?", (n,)
+            "SELECT * FROM trades WHERE is_demo = 0 ORDER BY id DESC LIMIT ?", (n,)
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
@@ -500,20 +500,20 @@ async def get_trade_stats(limit: int | None = None) -> dict[str, Any]:
 
         if limit:
             inner = (
-                f"SELECT * FROM trades WHERE is_win IS NOT NULL "
+                f"SELECT * FROM trades WHERE is_win IS NOT NULL AND is_demo = 0 "
                 f"ORDER BY id DESC LIMIT {limit}"
             )
             query = f"SELECT is_win, amount_usdc, pnl FROM ({inner}) ORDER BY id ASC"
         else:
             query = (
                 "SELECT is_win, amount_usdc, pnl FROM trades "
-                "WHERE is_win IS NOT NULL ORDER BY id ASC"
+                "WHERE is_win IS NOT NULL AND is_demo = 0 ORDER BY id ASC"
             )
 
         cursor = await db.execute(query)
         rows = await cursor.fetchall()
 
-        total_q = "SELECT COUNT(*) as cnt FROM trades"
+        total_q = "SELECT COUNT(*) as cnt FROM trades WHERE is_demo = 0"
         total_row = await (await db.execute(total_q)).fetchone()
         total_trades = total_row["cnt"]
 

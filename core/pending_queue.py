@@ -63,6 +63,7 @@ async def add_pending(
     slot_end: str,
     trade_id: int | None,
     amount_usdc: float | None,
+    is_demo: bool = False,
 ) -> None:
     """Add a slot to the persistent retry queue."""
     async with _get_lock():
@@ -79,6 +80,7 @@ async def add_pending(
             "slot_end": slot_end,
             "trade_id": trade_id,
             "amount_usdc": amount_usdc,
+            "is_demo": is_demo,
         })
         _save(items)
         log.info("Added signal %d to pending retry queue (slug=%s)", signal_id, slug)

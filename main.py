@@ -86,6 +86,7 @@ def main() -> None:
             BotCommand("redeem",      "Scan & redeem winning positions"),
             BotCommand("redemptions", "Redemption history"),
             BotCommand("settings",    "View/adjust bot settings"),
+            BotCommand("demo",        "Demo trading & virtual bankroll"),
             BotCommand("help",        "Show available commands"),
         ])
 
