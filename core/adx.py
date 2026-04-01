@@ -42,7 +42,7 @@ async def fetch_candles(count: int | None = None) -> list[dict[str, float]] | No
     }
 
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=15, proxy=None) as client:
             resp = await client.get(cfg.COINBASE_CANDLE_URL, params=params)
             resp.raise_for_status()
             raw = resp.json()

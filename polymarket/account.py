@@ -92,7 +92,7 @@ async def get_open_positions(poly_client) -> list[dict[str, Any]]:
         log.warning("POLYMARKET_FUNDER_ADDRESS not set -- cannot fetch positions")
         return []
 
-    url = f"{cfg.CLOB_HOST}/positions"
+    url = "https://data-api.polymarket.com/positions"
     params = {"user": funder}
     try:
         async with httpx.AsyncClient(timeout=15) as client:
