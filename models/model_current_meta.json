@@ -1,6 +1,7 @@
 {
   "train_date": "2026-04-09T15:16:12.467599",
   "threshold": 0.53,
+  "down_threshold": 0.47,
   "val_wr": 0.5681818181818182,
   "val_trades_per_day": 3.912922649374711,
   "test_wr": 0.5433526011560693,

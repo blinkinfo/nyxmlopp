@@ -908,6 +908,26 @@ async def set_ml_threshold(threshold: float) -> None:
     await set_ml_config("ml_threshold", str(threshold))
 
 
+async def get_ml_down_threshold() -> float | None:
+    """Get current ML DOWN inference threshold from DB.
+
+    Returns None if not set — callers should derive it as 1 - up_threshold
+    when absent (backwards-compatible with pre-DOWN-support models).
+    """
+    val = await get_ml_config("ml_down_threshold")
+    if val is not None:
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+async def set_ml_down_threshold(threshold: float) -> None:
+    """Persist ML DOWN inference threshold to DB."""
+    await set_ml_config("ml_down_threshold", str(threshold))
+
+
 # ---------------------------------------------------------------------------
 # Model registry helpers
 # ---------------------------------------------------------------------------

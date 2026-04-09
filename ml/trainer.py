@@ -237,6 +237,11 @@ def train(df_features: pd.DataFrame, slot: str = "current") -> dict:
     val_probs = model.predict(X_val)
     best_threshold, best_wr, best_trades_per_day = sweep_threshold(val_probs, y_val)
 
+    # DOWN threshold: symmetric complement of UP threshold.
+    # P(DOWN) = 1 - P(UP) >= down_threshold  <=>  P(UP) <= 1 - down_threshold
+    # Stored so ml_strategy can apply it without re-deriving it at runtime.
+    down_threshold = round(1.0 - best_threshold, 4)
+
     # Evaluate on test set using threshold chosen from val set
     test_probs = model.predict(X_test)
     test_metrics = evaluate_at_threshold(test_probs, y_test, best_threshold)
@@ -269,6 +274,7 @@ def train(df_features: pd.DataFrame, slot: str = "current") -> dict:
     metadata = {
         "train_date": datetime.utcnow().isoformat(),
         "threshold": best_threshold,
+        "down_threshold": down_threshold,
         "val_wr": best_wr,
         "val_trades_per_day": best_trades_per_day,
         "test_wr": test_metrics["wr"],
@@ -288,6 +294,7 @@ def train(df_features: pd.DataFrame, slot: str = "current") -> dict:
     return {
         "model": model,
         "threshold": best_threshold,
+        "down_threshold": down_threshold,
         "test_metrics": test_metrics,
         "val_wr": best_wr,
         "val_trades": best_trades_per_day,

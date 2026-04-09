@@ -249,6 +249,14 @@ async def migrate_db(db_path: str | None = None) -> None:
         except Exception as e:
             log.warning("migrate_db: ml_threshold seed failed: %s", e)
 
+        # --- seed default ML DOWN threshold (1 - up_threshold = 1 - 0.56 = 0.44) ---
+        try:
+            await db.execute(
+                "INSERT OR IGNORE INTO ml_config (key, value) VALUES ('ml_down_threshold', '0.44')"
+            )
+        except Exception as e:
+            log.warning("migrate_db: ml_down_threshold seed failed: %s", e)
+
         # --- seed default settings ---
         for key, value in DEFAULT_SETTINGS.items():
             try:

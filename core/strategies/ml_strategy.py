@@ -113,7 +113,7 @@ class MLStrategy(BaseStrategy):
                 log.info("MLStrategy: model loaded successfully")
 
     async def _get_threshold(self) -> float:
-        """Read threshold from ml_config table, fall back to cfg default."""
+        """Read UP threshold from ml_config table, fall back to cfg default."""
         try:
             val = await queries.get_ml_threshold()
             return val
@@ -127,6 +127,22 @@ class MLStrategy(BaseStrategy):
         except Exception:
             pass
         return cfg.ML_DEFAULT_THRESHOLD
+
+    async def _get_down_threshold(self, up_threshold: float) -> float:
+        """Read DOWN threshold from ml_config table.
+
+        Falls back to the symmetric complement (1 - up_threshold) so the
+        system is fully backwards-compatible with models trained before
+        down_threshold was stored explicitly.
+        """
+        try:
+            val = await queries.get_ml_down_threshold()
+            if val is not None:
+                return val
+        except Exception:
+            pass
+        # Symmetric fallback: mirror of the UP threshold around 0.5
+        return round(1.0 - up_threshold, 4)
 
     async def check_signal(self) -> dict[str, Any] | None:
         """Generate an ML-based signal for slot N+1.
@@ -189,27 +205,46 @@ class MLStrategy(BaseStrategy):
                 log.warning("MLStrategy: insufficient data for features, skipping")
                 return {**base_fields, "reason": "Insufficient data for features"}
 
-            # Model inference
+            # Model inference — P(UP) as a single float in [0, 1]
             prob = float(self._model.predict(feature_row)[0])
-            threshold = await self._get_threshold()
+            up_threshold   = await self._get_threshold()
+            down_threshold = await self._get_down_threshold(up_threshold)
 
-            # Determine direction per BLUEPRINT Section 11.1 Step 5:
-            #   Trade UP if prob >= threshold (class 1: price goes up).
-            #   Skip otherwise — DOWN trades were NOT backtested and are not
-            #   part of the blueprint. The threshold sweep was performed on
-            #   P(up) only; applying it to (1-p) for DOWN is unvalidated.
-            if prob >= threshold:
+            # P(DOWN) = 1 - P(UP)
+            prob_down = round(1.0 - prob, 6)
+
+            up_qualifies   = prob      >= up_threshold
+            down_qualifies = prob_down >= down_threshold
+
+            # Determine direction:
+            #   - Both qualify  → pick the one with the larger margin over its threshold
+            #   - Only one      → pick that one
+            #   - Neither       → skip
+            if up_qualifies and down_qualifies:
+                up_margin   = prob      - up_threshold
+                down_margin = prob_down - down_threshold
+                side = "Up" if up_margin >= down_margin else "Down"
+                log.info(
+                    "MLStrategy: BOTH qualify — up_margin=%.4f down_margin=%.4f → side=%s",
+                    up_margin, down_margin, side,
+                )
+            elif up_qualifies:
                 side = "Up"
+            elif down_qualifies:
+                side = "Down"
             else:
                 return {
                     **base_fields,
-                    "pattern": f"p={prob:.4f}<{threshold:.3f}",
-                    "reason": f"Below threshold (p={prob:.4f})",
+                    "pattern": f"p={prob:.4f}<{up_threshold:.3f}",
+                    "reason": (
+                        f"Below threshold (p_up={prob:.4f}<{up_threshold:.3f}, "
+                        f"p_down={prob_down:.4f}<{down_threshold:.3f})"
+                    ),
                 }
 
             log.info(
-                "MLStrategy: side=%s prob=%.4f threshold=%.3f slot=%s",
-                side, prob, threshold, slot_n1["slug"],
+                "MLStrategy: side=%s p_up=%.4f p_down=%.4f up_thr=%.3f down_thr=%.3f slot=%s",
+                side, prob, prob_down, up_threshold, down_threshold, slot_n1["slug"],
             )
 
             # Fetch Polymarket prices — identical to PatternStrategy
@@ -235,7 +270,7 @@ class MLStrategy(BaseStrategy):
                 "entry_price":    entry_price,
                 "opposite_price": opposite_price,
                 "token_id":       token_id,
-                "pattern":        f"p={prob:.4f}",
+                "pattern":        f"p_up={prob:.4f},p_down={prob_down:.4f}",
             }
 
         except Exception as exc:
