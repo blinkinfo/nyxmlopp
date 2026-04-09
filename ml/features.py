@@ -53,14 +53,14 @@ def _asof_backward(left_ts: pd.Series, right: pd.DataFrame, right_cols: list[str
     Returns  : DataFrame indexed 0..len(left_ts)-1 with right_cols,
                NaN where no prior right row exists or left_ts is NaT.
     """
-    # Build a left frame; give the key column a unique name to avoid collisions
-    # with any column that might already exist in `right`.
-    left_df = pd.DataFrame({"_left_ts": left_ts.values})
+    n = len(left_ts)
+
+    # Build a left frame with a positional index column so we can reindex after
+    # the merge.  Give the key a unique name to avoid collisions with `right`.
+    left_df = pd.DataFrame({"_left_ts": left_ts.values, "_pos": np.arange(n)})
 
     # Ensure both key columns share the exact same dtype before merge_asof.
-    # Both sides are already datetime64[ms, UTC] at call sites, but we cast
-    # explicitly here so this function is robust regardless of caller.
-    # Localize if tz-naive, then cast to datetime64[ms, UTC]
+    # Localize if tz-naive, then cast to datetime64[ms, UTC].
     col = left_df["_left_ts"]
     if col.dt.tz is None:
         col = col.dt.tz_localize("UTC")
@@ -71,17 +71,33 @@ def _asof_backward(left_ts: pd.Series, right: pd.DataFrame, right_cols: list[str
         ts_col = ts_col.dt.tz_localize("UTC")
     right["timestamp"] = ts_col.astype("datetime64[ms, UTC]")
 
+    # pd.merge_asof refuses NaT in the left key (raises ValueError).
+    # ts_n1 = df5["timestamp"].shift(1) always produces NaT at row 0.
+    # Solution: filter those rows out, merge the valid subset, then reindex
+    # back to the full 0..n-1 range — NaT positions stay NaN in output.
+    valid_mask = left_df["_left_ts"].notna()
+    left_valid = left_df[valid_mask].reset_index(drop=True)
+
+    if left_valid.empty:
+        # All rows were NaT — return all-NaN frame of correct shape.
+        return pd.DataFrame(np.nan, index=np.arange(n), columns=right_cols)
+
     merged = pd.merge_asof(
-        left_df,
+        left_valid,
         right[["timestamp"] + right_cols],
         left_on="_left_ts",
         right_on="timestamp",
         direction="backward",
     )
 
-    # Drop the key columns; return only the requested feature columns,
-    # re-indexed 0..n-1 (merge_asof preserves left row order).
-    return merged[right_cols].reset_index(drop=True)
+    # Restore original positions: set _pos as index, reindex to 0..n-1.
+    # Rows that were NaT (excluded above) will have NaN filled automatically.
+    result = (
+        merged[["_pos"] + right_cols]
+        .set_index("_pos")
+        .reindex(np.arange(n))
+    )
+    return result.reset_index(drop=True)
 
 
 def build_features(

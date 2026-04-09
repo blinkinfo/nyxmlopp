@@ -142,6 +142,33 @@ def test_asof_backward_vectorized_matches_searchsorted():
     np.testing.assert_array_equal(got_b[~nan_mask_b], expected_b[~nan_mask_b])
 
 
+def test_asof_backward_nat_handling():
+    """_asof_backward must silently produce NaN for NaT rows in the left key,
+    NOT raise ValueError.  This replicates the real call site:
+        ts_n1 = df5['timestamp'].shift(1)  -> row 0 is always NaT.
+    """
+    from ml.features import _asof_backward
+
+    n_right = 20
+    right_ts = pd.date_range('2025-01-01', periods=n_right, freq='15min', tz='UTC')
+    right = pd.DataFrame({
+        'timestamp': right_ts,
+        'val_a': np.arange(n_right, dtype=float),
+    })
+
+    # Simulate shift(1): first element is NaT, rest are valid timestamps.
+    valid_ts = pd.date_range('2025-01-01 00:05', periods=9, freq='5min', tz='UTC')
+    left_with_nat = pd.Series([pd.NaT] + list(valid_ts), dtype='datetime64[ns, UTC]')
+
+    # Must not raise — NaT rows should silently become NaN in output.
+    result = _asof_backward(left_with_nat, right, ['val_a'])
+
+    assert len(result) == 10, "Output length must equal input length"
+    assert pd.isna(result['val_a'].iloc[0]), "Row 0 (NaT input) must produce NaN output"
+    # Valid rows after the first right timestamp should have non-NaN values
+    assert result['val_a'].iloc[1:].notna().any(), "Valid timestamp rows should resolve to non-NaN"
+
+
 def test_volume_ratio_n1_excludes_self_from_mean():
     """volume_ratio_n1 = volume[i-1] / mean(volume[i-2]..volume[i-21]).
     The N-1 candle must NOT appear in its own rolling mean denominator.
