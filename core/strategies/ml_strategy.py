@@ -56,8 +56,24 @@ class MLStrategy(BaseStrategy):
         self._model = None
         self._funding_buffer: deque = deque(maxlen=24)
         self._model_slot = "current"
-        self._load_model()
-        self._seed_funding_buffer()
+        # Each step is individually guarded so a failure in one never prevents
+        # the other from running, and a constructor crash can never propagate
+        # up to _get_strategy() / the scheduler.
+        try:
+            self._load_model()
+        except Exception:
+            log.exception(
+                "MLStrategy.__init__: _load_model failed — model will be None; "
+                "signals will be skipped until a model is loaded via set_model() or /retrain"
+            )
+        try:
+            self._seed_funding_buffer()
+        except Exception:
+            log.exception(
+                "MLStrategy.__init__: _seed_funding_buffer failed — "
+                "funding zscore will be undefined for the first live periods; "
+                "inference will continue with an empty buffer"
+            )
 
     def _seed_funding_buffer(self) -> None:
         """Seed the funding buffer with historical data on startup.

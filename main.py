@@ -23,7 +23,7 @@ logging.basicConfig(
 # Suppress noisy third-party loggers
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("apscheduler").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.INFO)   # INFO so scheduler start/jobs are visible
 logging.getLogger("telegram").setLevel(logging.WARNING)
 log = logging.getLogger("autopoly")
 
@@ -152,16 +152,33 @@ def main() -> None:
              before start_scheduler(), SCHEDULER is still None and every
              recovery job is silently dropped (the `if SCHEDULER is not None`
              guard in recover_unresolved fires False for every signal).
-        """
-        await migrate_db()
-        cleaned = await cleanup_bad_redemptions()
-        if cleaned:
-            log.info("Startup: cleaned %d incorrectly recorded redemption row(s)", cleaned)
-        await _startup_safe_sanity_check()
 
-        # Load ML model: try DB first, fall back to disk
-        # Wrapped in try/except so any model-load failure is non-fatal and
-        # cannot abort post_init (scheduler must always start).
+        Every step before start_scheduler() is wrapped in its own try/except so
+        that NO pre-scheduler failure can ever prevent the scheduler from starting.
+        """
+        # --- Step 1: DB migration (non-fatal if it partially fails) ---
+        try:
+            await migrate_db()
+        except Exception:
+            log.exception("post_init: migrate_db failed (non-fatal) — continuing startup")
+
+        # --- Step 2: One-time redemption cleanup (non-fatal) ---
+        try:
+            cleaned = await cleanup_bad_redemptions()
+            if cleaned:
+                log.info("Startup: cleaned %d incorrectly recorded redemption row(s)", cleaned)
+        except Exception:
+            log.exception("post_init: cleanup_bad_redemptions failed (non-fatal) — continuing startup")
+
+        # --- Step 3: Wallet sanity check (non-fatal by design) ---
+        try:
+            await _startup_safe_sanity_check()
+        except Exception:
+            log.exception("post_init: _startup_safe_sanity_check failed (non-fatal) — continuing startup")
+
+        # --- Step 4: ML model preload — try DB first, fall back to disk ---
+        # Fully non-fatal: a missing/broken model just means signals are skipped
+        # until the user runs /retrain. The scheduler MUST still start.
         try:
             from core.strategies import ml_strategy
             from ml import model_store
@@ -175,24 +192,40 @@ def main() -> None:
                     ml_strategy.set_model(disk_model)
                     log.info("Startup: ML model loaded from disk (fallback)")
                 else:
-                    log.warning("Startup: No ML model found — signals will be skipped until retrain")
+                    log.warning(
+                        "Startup: No ML model found — signals will be skipped until retrain"
+                    )
         except Exception:
-            log.exception("Startup: ML model load failed (non-fatal) — signals will be skipped until retrain")
+            log.exception(
+                "Startup: ML model load failed (non-fatal) — signals will be skipped until retrain"
+            )
 
+        # --- Step 5: Start scheduler — ALWAYS reached regardless of above ---
         start_scheduler(application, poly_client)
-        await recover_unresolved()
+        log.info("post_init: scheduler started successfully")
 
-        # Register bot commands so they appear in Telegram menu
-        await application.bot.set_my_commands([
-            BotCommand("status",      "Portfolio overview & bot health"),
-            BotCommand("signals",     "Recent trading signals"),
-            BotCommand("trades",      "Open & recent trades"),
-            BotCommand("redeem",      "Scan & redeem winning positions"),
-            BotCommand("redemptions", "Redemption history"),
-            BotCommand("settings",    "View/adjust bot settings"),
-            BotCommand("demo",        "Demo trading & virtual bankroll"),
-            BotCommand("help",        "Show available commands"),
-        ])
+        # --- Step 6: Recover any unresolved signals from previous run ---
+        try:
+            await recover_unresolved()
+        except Exception:
+            log.exception("post_init: recover_unresolved failed (non-fatal) — continuing startup")
+
+        # --- Step 7: Register bot commands so they appear in Telegram menu ---
+        try:
+            await application.bot.set_my_commands([
+                BotCommand("status",      "Portfolio overview & bot health"),
+                BotCommand("signals",     "Recent trading signals"),
+                BotCommand("trades",      "Open & recent trades"),
+                BotCommand("redeem",      "Scan & redeem winning positions"),
+                BotCommand("redemptions", "Redemption history"),
+                BotCommand("settings",    "View/adjust bot settings"),
+                BotCommand("demo",        "Demo trading & virtual bankroll"),
+                BotCommand("help",        "Show available commands"),
+            ])
+        except Exception:
+            log.exception("post_init: set_my_commands failed (non-fatal) — continuing startup")
+
+        log.info("post_init: complete")
 
     application = (
         Application.builder()

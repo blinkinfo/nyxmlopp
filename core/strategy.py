@@ -22,13 +22,31 @@ _strategy: Any | None = None
 
 
 def _get_strategy():
-    """Return the active strategy instance, loading it lazily."""
+    """Return the active strategy instance, loading it lazily.
+
+    Returns None if the strategy cannot be instantiated (constructor crashed
+    or unknown name). The caller must check for None before calling
+    check_signal() — returning None propagates the hard-error sentinel up
+    to the scheduler which logs and skips the slot.
+    """
     global _strategy
     if _strategy is None:
         strategy_name = getattr(cfg, "STRATEGY_NAME", "pattern")
-        from core.strategies import get_strategy
-        _strategy = get_strategy(strategy_name)
-        log.info("Strategy engine: loaded '%s' strategy", strategy_name)
+        try:
+            from core.strategies import get_strategy
+            _strategy = get_strategy(strategy_name)
+            log.info("Strategy engine: loaded '%s' strategy", strategy_name)
+        except Exception:
+            log.exception(
+                "Strategy engine: failed to instantiate strategy '%s' — "
+                "check_signal() will return None (hard error) until the next "
+                "successful instantiation attempt",
+                strategy_name,
+            )
+            # Do NOT cache a broken/None value — allow retry on the next slot
+            # so a transient failure (e.g. network in _seed_funding_buffer)
+            # doesn't permanently disable signals for the life of the process.
+            return None
     return _strategy
 
 
@@ -40,4 +58,7 @@ async def check_signal() -> dict[str, Any] | None:
     needed by the scheduler.
     """
     strategy = _get_strategy()
+    if strategy is None:
+        # _get_strategy already logged the error; return hard-error sentinel
+        return None
     return await strategy.check_signal()
